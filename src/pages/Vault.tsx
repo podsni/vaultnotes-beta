@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useVault } from '@/contexts/VaultContext';
 import { Logo } from '@/components/Logo';
+import { ThemeToggle } from '@/components/ThemeToggle';
+import { ShortcutsHelpDialog } from '@/components/ShortcutsHelpDialog';
 import { AccountDialog } from '@/components/AccountDialog';
-import { Plus, FileText, User, Search, Trash2 } from 'lucide-react';
+import { useKeyboardShortcuts, Shortcut } from '@/hooks/use-keyboard-shortcuts';
+import { calculateStats } from '@/hooks/use-note-stats';
+import { Plus, FileText, User, Search, Trash2, Keyboard } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -20,9 +24,11 @@ export default function Vault() {
   const navigate = useNavigate();
   const { vaultId, vaultKey, mnemonic, notes, isLoading, createNote, deleteNote, signOut } = useVault();
   const [accountDialogOpen, setAccountDialogOpen] = useState(false);
+  const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [noteToDelete, setNoteToDelete] = useState<{ id: string; title: string } | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!vaultId || !vaultKey) {
@@ -39,6 +45,44 @@ export default function Vault() {
     }
   };
 
+  // Define shortcuts
+  const shortcuts: Shortcut[] = useMemo(() => [
+    {
+      key: 'n',
+      modifiers: ['ctrl'],
+      action: handleNewNote,
+      description: 'Create new note',
+      scope: 'global',
+    },
+    {
+      key: 'k',
+      modifiers: ['ctrl'],
+      action: () => searchInputRef.current?.focus(),
+      description: 'Focus search',
+      scope: 'global',
+    },
+    {
+      key: '/',
+      modifiers: ['ctrl'],
+      action: () => setShortcutsDialogOpen(true),
+      description: 'Show shortcuts',
+      scope: 'global',
+    },
+    {
+      key: 'Escape',
+      modifiers: [],
+      action: () => {
+        setAccountDialogOpen(false);
+        setShortcutsDialogOpen(false);
+        setDeleteDialogOpen(false);
+      },
+      description: 'Close dialog',
+      scope: 'global',
+    },
+  ], []);
+
+  useKeyboardShortcuts({ shortcuts, enabled: !!vaultId });
+
   const handleDeleteClick = (e: React.MouseEvent, noteId: string, noteTitle: string) => {
     e.preventDefault();
     e.stopPropagation();
@@ -51,7 +95,7 @@ export default function Vault() {
     
     try {
       await deleteNote(noteToDelete.id);
-      toast.success('Note deleted');
+      toast.success('Note moved to trash');
     } catch {
       toast.error('Failed to delete note');
     } finally {
@@ -109,13 +153,30 @@ export default function Vault() {
         <div className="px-4 py-3 sm:px-8 md:px-16">
           <div className="max-w-3xl mx-auto flex items-center justify-between">
             <Logo />
-            <button
-              onClick={() => setAccountDialogOpen(true)}
-              className="text-muted-foreground hover:text-foreground p-2 hover:bg-muted rounded-md transition-colors"
-              title="Account"
-            >
-              <User className="h-5 w-5" />
-            </button>
+            <div className="flex items-center gap-1">
+              <Link
+                to="/vault/trash"
+                className="text-muted-foreground hover:text-foreground p-2 hover:bg-muted rounded-md transition-colors"
+                title="Trash"
+              >
+                <Trash2 className="h-5 w-5" />
+              </Link>
+              <button
+                onClick={() => setShortcutsDialogOpen(true)}
+                className="text-muted-foreground hover:text-foreground p-2 hover:bg-muted rounded-md transition-colors"
+                title="Keyboard shortcuts"
+              >
+                <Keyboard className="h-5 w-5" />
+              </button>
+              <ThemeToggle />
+              <button
+                onClick={() => setAccountDialogOpen(true)}
+                className="text-muted-foreground hover:text-foreground p-2 hover:bg-muted rounded-md transition-colors"
+                title="Account"
+              >
+                <User className="h-5 w-5" />
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -141,6 +202,7 @@ export default function Vault() {
             <div className="relative mb-6">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <input
+                ref={searchInputRef}
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -221,11 +283,14 @@ export default function Vault() {
             </div>
           )}
 
-          {/* Note Count */}
+          {/* Note Count & Stats */}
           {notes.length > 0 && (
-            <p className="text-center text-xs text-muted-foreground mt-8">
-              {notes.length} {notes.length === 1 ? 'note' : 'notes'}
-            </p>
+            <div className="text-center text-xs text-muted-foreground mt-8 space-y-1">
+              <p>{notes.length} {notes.length === 1 ? 'note' : 'notes'}</p>
+              <p>
+                {notes.reduce((total, note) => total + calculateStats(note.content).wordCount, 0).toLocaleString()} total words
+              </p>
+            </div>
           )}
         </div>
       </div>
@@ -243,9 +308,9 @@ export default function Vault() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete note?</AlertDialogTitle>
+            <AlertDialogTitle>Move to trash?</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{noteToDelete?.title}"? This action cannot be undone.
+              "{noteToDelete?.title}" will be moved to trash. You can restore it later from the trash.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -254,11 +319,18 @@ export default function Vault() {
               onClick={handleConfirmDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              Move to Trash
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Shortcuts Help Dialog */}
+      <ShortcutsHelpDialog
+        open={shortcutsDialogOpen}
+        onOpenChange={setShortcutsDialogOpen}
+        shortcuts={shortcuts}
+      />
     </main>
   );
 }

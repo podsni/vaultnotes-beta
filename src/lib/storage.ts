@@ -1,9 +1,10 @@
 // IndexedDB storage for encrypted notes
 
 const DB_NAME = 'leafvault';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Incremented for trash store
 const NOTES_STORE = 'notes';
 const VAULTS_STORE = 'vaults';
+const TRASH_STORE = 'trashedNotes';
 
 export interface Note {
   id: string;
@@ -11,6 +12,10 @@ export interface Note {
   encryptedContent: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface TrashedNote extends Note {
+  deletedAt: number;
 }
 
 export interface VaultInfo {
@@ -37,6 +42,13 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(VAULTS_STORE)) {
         db.createObjectStore(VAULTS_STORE, { keyPath: 'id' });
       }
+
+      // New trash store for version 2
+      if (!db.objectStoreNames.contains(TRASH_STORE)) {
+        const trashStore = db.createObjectStore(TRASH_STORE, { keyPath: 'id' });
+        trashStore.createIndex('vaultId', 'vaultId', { unique: false });
+        trashStore.createIndex('deletedAt', 'deletedAt', { unique: false });
+      }
     };
   });
 }
@@ -49,6 +61,17 @@ export async function saveNote(note: Note): Promise<void> {
     const request = store.put(note);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve();
+  });
+}
+
+export async function getNote(noteId: string): Promise<Note | undefined> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(NOTES_STORE, 'readonly');
+    const store = transaction.objectStore(NOTES_STORE);
+    const request = store.get(noteId);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
   });
 }
 
@@ -75,6 +98,125 @@ export async function deleteNote(noteId: string): Promise<void> {
     const request = store.delete(noteId);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve();
+  });
+}
+
+// Trash operations
+export async function moveToTrash(noteId: string): Promise<void> {
+  const db = await openDB();
+  
+  // Get the note first
+  const note = await getNote(noteId);
+  if (!note) {
+    throw new Error('Note not found');
+  }
+
+  const trashedNote: TrashedNote = {
+    ...note,
+    deletedAt: Date.now(),
+  };
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([NOTES_STORE, TRASH_STORE], 'readwrite');
+    const notesStore = transaction.objectStore(NOTES_STORE);
+    const trashStore = transaction.objectStore(TRASH_STORE);
+
+    // Add to trash
+    const addRequest = trashStore.put(trashedNote);
+    addRequest.onerror = () => reject(addRequest.error);
+    
+    // Remove from notes
+    const deleteRequest = notesStore.delete(noteId);
+    deleteRequest.onerror = () => reject(deleteRequest.error);
+
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+export async function getTrashedNotes(vaultId: string): Promise<TrashedNote[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(TRASH_STORE, 'readonly');
+    const store = transaction.objectStore(TRASH_STORE);
+    const index = store.index('vaultId');
+    const request = index.getAll(vaultId);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const notes = request.result.sort((a, b) => b.deletedAt - a.deletedAt);
+      resolve(notes);
+    };
+  });
+}
+
+export async function restoreFromTrash(noteId: string): Promise<void> {
+  const db = await openDB();
+  
+  // Get the trashed note first
+  const trashedNote = await new Promise<TrashedNote | undefined>((resolve, reject) => {
+    const transaction = db.transaction(TRASH_STORE, 'readonly');
+    const store = transaction.objectStore(TRASH_STORE);
+    const request = store.get(noteId);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+  });
+
+  if (!trashedNote) {
+    throw new Error('Trashed note not found');
+  }
+
+  // Restore to notes (without deletedAt)
+  const restoredNote: Note = {
+    id: trashedNote.id,
+    vaultId: trashedNote.vaultId,
+    encryptedContent: trashedNote.encryptedContent,
+    createdAt: trashedNote.createdAt,
+    updatedAt: trashedNote.updatedAt,
+  };
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([NOTES_STORE, TRASH_STORE], 'readwrite');
+    const notesStore = transaction.objectStore(NOTES_STORE);
+    const trashStore = transaction.objectStore(TRASH_STORE);
+
+    // Add back to notes
+    const addRequest = notesStore.put(restoredNote);
+    addRequest.onerror = () => reject(addRequest.error);
+    
+    // Remove from trash
+    const deleteRequest = trashStore.delete(noteId);
+    deleteRequest.onerror = () => reject(deleteRequest.error);
+
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+export async function permanentlyDelete(noteId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(TRASH_STORE, 'readwrite');
+    const store = transaction.objectStore(TRASH_STORE);
+    const request = store.delete(noteId);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function emptyTrash(vaultId: string): Promise<void> {
+  const db = await openDB();
+  const trashedNotes = await getTrashedNotes(vaultId);
+  
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(TRASH_STORE, 'readwrite');
+    const store = transaction.objectStore(TRASH_STORE);
+    
+    for (const note of trashedNotes) {
+      store.delete(note.id);
+    }
+
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
   });
 }
 

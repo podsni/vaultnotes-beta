@@ -2,14 +2,16 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useVault } from '@/contexts/VaultContext';
 import { Logo } from '@/components/Logo';
+import { ThemeToggle } from '@/components/ThemeToggle';
+import { NoteStatsBar } from '@/components/NoteStatsBar';
 import { TiptapEditor } from '@/components/TiptapEditor';
+import { useNoteStats } from '@/hooks/use-note-stats';
 import { ArrowLeft, Trash2, Check, MoreVertical, Code, Copy, Download, FileText, CheckCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
@@ -40,6 +42,9 @@ export default function NoteEditor() {
   const [showSourceDialog, setShowSourceDialog] = useState(false);
   const [copied, setCopied] = useState(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  // Note statistics
+  const stats = useNoteStats(content);
 
   useEffect(() => {
     if (!vaultId || !vaultKey) {
@@ -85,10 +90,10 @@ export default function NoteEditor() {
   const handleDelete = async () => {
     if (!noteId) return;
 
-    if (window.confirm('Delete this note? This cannot be undone.')) {
+    if (window.confirm('Move this note to trash?')) {
       try {
         await deleteNote(noteId);
-        toast.success('Note deleted');
+        toast.success('Note moved to trash');
         navigate('/vault');
       } catch {
         toast.error('Failed to delete');
@@ -234,6 +239,8 @@ export default function NoteEditor() {
                 ) : null}
               </span>
 
+              <ThemeToggle />
+
               {/* Desktop Menu - DropdownMenu */}
               {!isMobile && (
                 <DropdownMenu>
@@ -301,7 +308,14 @@ Use markdown shortcuts:
         </div>
       </div>
 
-      {/* Mobile Bottom Sheet Menu */}
+      {/* Stats Bar */}
+      <footer className="sticky bottom-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-t border-border">
+        <div className="px-4 sm:px-8 md:px-16">
+          <div className="max-w-4xl mx-auto">
+            <NoteStatsBar stats={stats} />
+          </div>
+        </div>
+      </footer>      {/* Mobile Bottom Sheet Menu */}
       <Sheet open={showMobileMenu} onOpenChange={setShowMobileMenu}>
         <SheetContent side="bottom" className="rounded-t-2xl px-4 pb-8">
           <SheetHeader className="pb-4">

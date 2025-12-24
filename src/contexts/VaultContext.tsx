@@ -1,7 +1,20 @@
 import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { encrypt, decrypt } from '@/lib/crypto';
 import { generateMnemonic, mnemonicToVaultKey, mnemonicToVaultId } from '@/lib/mnemonic';
-import { saveNote, getNotesByVault, deleteNote as deleteNoteFromDB, saveVault, saveSession, getSession, clearSession } from '@/lib/storage';
+import { 
+  saveNote, 
+  getNotesByVault, 
+  saveVault, 
+  saveSession, 
+  getSession, 
+  clearSession,
+  moveToTrash as moveToTrashDB,
+  getTrashedNotes,
+  restoreFromTrash as restoreFromTrashDB,
+  permanentlyDelete as permanentlyDeleteDB,
+  emptyTrash as emptyTrashDB,
+  TrashedNote,
+} from '@/lib/storage';
 
 export interface ExportedVault {
   version: number;
@@ -15,11 +28,23 @@ export interface ExportedVault {
   }[];
 }
 
+export interface DecryptedNote {
+  id: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DecryptedTrashedNote extends DecryptedNote {
+  deletedAt: number;
+}
+
 interface VaultContextType {
   vaultId: string | null;
   vaultKey: string | null;
   mnemonic: string[] | null;
   notes: DecryptedNote[];
+  trashedNotes: DecryptedTrashedNote[];
   isLoading: boolean;
   isRestoring: boolean;
   createVaultWithMnemonic: (mnemonic?: string[], rememberMe?: boolean) => Promise<{ vaultId: string; vaultKey: string; mnemonic: string[] }>;
@@ -31,13 +56,11 @@ interface VaultContextType {
   getNote: (noteId: string) => DecryptedNote | undefined;
   exportVault: () => ExportedVault | null;
   importNotes: (data: ExportedVault) => Promise<{ imported: number; skipped: number }>;
-}
-
-export interface DecryptedNote {
-  id: string;
-  content: string;
-  createdAt: number;
-  updatedAt: number;
+  // Trash operations
+  moveToTrash: (noteId: string) => Promise<void>;
+  restoreNote: (noteId: string) => Promise<void>;
+  permanentlyDeleteNote: (noteId: string) => Promise<void>;
+  emptyTrash: () => Promise<void>;
 }
 
 const VaultContext = createContext<VaultContextType | undefined>(undefined);
@@ -47,12 +70,14 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [vaultKey, setVaultKey] = useState<string | null>(null);
   const [mnemonic, setMnemonic] = useState<string[] | null>(null);
   const [notes, setNotes] = useState<DecryptedNote[]>([]);
+  const [trashedNotes, setTrashedNotes] = useState<DecryptedTrashedNote[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
 
   const loadNotes = useCallback(async (vid: string, vkey: string) => {
     setIsLoading(true);
     try {
+      // Load active notes
       const encryptedNotes = await getNotesByVault(vid);
       const decryptedNotes: DecryptedNote[] = [];
 
@@ -71,6 +96,27 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       }
 
       setNotes(decryptedNotes.sort((a, b) => b.updatedAt - a.updatedAt));
+
+      // Load trashed notes
+      const encryptedTrashed = await getTrashedNotes(vid);
+      const decryptedTrashed: DecryptedTrashedNote[] = [];
+
+      for (const note of encryptedTrashed) {
+        try {
+          const content = await decrypt(note.encryptedContent, vkey);
+          decryptedTrashed.push({
+            id: note.id,
+            content,
+            createdAt: note.createdAt,
+            updatedAt: note.updatedAt,
+            deletedAt: note.deletedAt,
+          });
+        } catch {
+          console.error('Failed to decrypt trashed note:', note.id);
+        }
+      }
+
+      setTrashedNotes(decryptedTrashed.sort((a, b) => b.deletedAt - a.deletedAt));
     } finally {
       setIsLoading(false);
     }
@@ -111,6 +157,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setVaultKey(newVaultKey);
     setMnemonic(newMnemonic);
     setNotes([]);
+    setTrashedNotes([]);
 
     // Save session if remember me is enabled
     if (rememberMe) {
@@ -146,6 +193,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setVaultKey(null);
     setMnemonic(null);
     setNotes([]);
+    setTrashedNotes([]);
     clearSession();
   }, []);
 
@@ -193,10 +241,58 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     );
   }, [vaultId, vaultKey, notes]);
 
-  const deleteNoteHandler = useCallback(async (noteId: string) => {
-    await deleteNoteFromDB(noteId);
+  // Move note to trash (soft delete)
+  const moveToTrash = useCallback(async (noteId: string) => {
+    const noteToTrash = notes.find(n => n.id === noteId);
+    if (!noteToTrash) throw new Error('Note not found');
+
+    await moveToTrashDB(noteId);
+
+    // Update local state
     setNotes(prev => prev.filter(n => n.id !== noteId));
+    setTrashedNotes(prev => [
+      { ...noteToTrash, deletedAt: Date.now() },
+      ...prev,
+    ]);
+  }, [notes]);
+
+  // Restore note from trash
+  const restoreNote = useCallback(async (noteId: string) => {
+    const noteToRestore = trashedNotes.find(n => n.id === noteId);
+    if (!noteToRestore) throw new Error('Trashed note not found');
+
+    await restoreFromTrashDB(noteId);
+
+    // Update local state
+    setTrashedNotes(prev => prev.filter(n => n.id !== noteId));
+    setNotes(prev => [
+      {
+        id: noteToRestore.id,
+        content: noteToRestore.content,
+        createdAt: noteToRestore.createdAt,
+        updatedAt: noteToRestore.updatedAt,
+      },
+      ...prev,
+    ].sort((a, b) => b.updatedAt - a.updatedAt));
+  }, [trashedNotes]);
+
+  // Permanently delete note from trash
+  const permanentlyDeleteNote = useCallback(async (noteId: string) => {
+    await permanentlyDeleteDB(noteId);
+    setTrashedNotes(prev => prev.filter(n => n.id !== noteId));
   }, []);
+
+  // Empty all trash
+  const emptyTrash = useCallback(async () => {
+    if (!vaultId) throw new Error('Not signed in');
+    await emptyTrashDB(vaultId);
+    setTrashedNotes([]);
+  }, [vaultId]);
+
+  // Legacy delete (now uses moveToTrash)
+  const deleteNoteHandler = useCallback(async (noteId: string) => {
+    await moveToTrash(noteId);
+  }, [moveToTrash]);
 
   const getNote = useCallback((noteId: string) => {
     return notes.find(n => n.id === noteId);
@@ -265,6 +361,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         vaultKey,
         mnemonic,
         notes,
+        trashedNotes,
         isLoading,
         isRestoring,
         createVaultWithMnemonic,
@@ -276,6 +373,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         getNote,
         exportVault,
         importNotes,
+        moveToTrash,
+        restoreNote,
+        permanentlyDeleteNote,
+        emptyTrash,
       }}
     >
       {children}
