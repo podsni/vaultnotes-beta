@@ -3,28 +3,43 @@ import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useVault } from '@/contexts/VaultContext';
 import { Logo } from '@/components/Logo';
 import { TiptapEditor } from '@/components/TiptapEditor';
-import { ArrowLeft, Trash2, Check, MoreVertical, Code, Copy } from 'lucide-react';
+import { ArrowLeft, Trash2, Check, MoreVertical, Code, Copy, Download, FileText, CheckCheck } from 'lucide-react';
 import { toast } from 'sonner';
+import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
 
 export default function NoteEditor() {
   const navigate = useNavigate();
   const { noteId } = useParams<{ noteId: string }>();
   const { vaultId, vaultKey, getNote, updateNote, deleteNote } = useVault();
+  const isMobile = useIsMobile();
 
   const [content, setContent] = useState('');
   const [initialContent, setInitialContent] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
-  const [showMenu, setShowMenu] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [showSourceDialog, setShowSourceDialog] = useState(false);
+  const [copied, setCopied] = useState(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!vaultId || !vaultKey) {
@@ -40,17 +55,6 @@ export default function NoteEditor() {
       }
     }
   }, [vaultId, vaultKey, noteId, getNote, navigate]);
-
-  // Close menu on outside click
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setShowMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   const saveNote = useCallback(async (newContent: string) => {
     if (!noteId) return;
@@ -95,14 +99,112 @@ export default function NoteEditor() {
   const handleCopyMarkdown = async () => {
     try {
       await navigator.clipboard.writeText(content);
-      toast.success('Markdown copied to clipboard');
-      setShowSourceDialog(false);
+      setCopied(true);
+      toast.success('Copied to clipboard');
+      setTimeout(() => setCopied(false), 2000);
     } catch {
       toast.error('Failed to copy');
     }
   };
 
+  const handleDownloadFromSource = (format: 'md' | 'txt') => {
+    const title = getNoteTitleFromContent(content);
+    const filename = `${title}.${format}`;
+    const mimeType = format === 'md' ? 'text/markdown' : 'text/plain';
+    
+    const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    toast.success(`Downloaded as ${filename}`);
+  };
+
+  // Get line count for display
+  const lineCount = content ? content.split('\n').length : 0;
+  const charCount = content ? content.length : 0;
+
+  const getNoteTitleFromContent = (noteContent: string): string => {
+    const lines = noteContent.trim().split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed) {
+        const title = trimmed.replace(/^#+\s*/, '').slice(0, 50);
+        return title || 'note';
+      }
+    }
+    return 'note';
+  };
+
+  const handleDownload = (format: 'md' | 'txt') => {
+    const title = getNoteTitleFromContent(content);
+    const filename = `${title}.${format}`;
+    const mimeType = format === 'md' ? 'text/markdown' : 'text/plain';
+    
+    const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    toast.success(`Downloaded as ${filename}`);
+    setShowMobileMenu(false);
+  };
+
+  // Menu items component for reuse
+  const MenuItems = ({ onClose }: { onClose?: () => void }) => (
+    <>
+      <button
+        onClick={() => {
+          onClose?.();
+          setShowSourceDialog(true);
+        }}
+        className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-muted transition-colors rounded-lg"
+      >
+        <Code className="h-5 w-5 text-muted-foreground" />
+        <span>View Source</span>
+      </button>
+      <button
+        onClick={() => handleDownload('md')}
+        className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-muted transition-colors rounded-lg"
+      >
+        <Download className="h-5 w-5 text-muted-foreground" />
+        <span>Download as Markdown</span>
+      </button>
+      <button
+        onClick={() => handleDownload('txt')}
+        className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-muted transition-colors rounded-lg"
+      >
+        <FileText className="h-5 w-5 text-muted-foreground" />
+        <span>Download as Text</span>
+      </button>
+      <div className="border-t border-border my-2" />
+      <button
+        onClick={() => {
+          onClose?.();
+          handleDelete();
+        }}
+        className="w-full flex items-center gap-3 px-4 py-3 text-sm text-destructive hover:bg-destructive/10 transition-colors rounded-lg"
+      >
+        <Trash2 className="h-5 w-5" />
+        <span>Delete note</span>
+      </button>
+    </>
+  );
+
   if (!vaultId || !vaultKey) return null;
+
 
   return (
     <main className="min-h-screen bg-background flex flex-col">
@@ -132,40 +234,48 @@ export default function NoteEditor() {
                 ) : null}
               </span>
 
-              {/* Menu */}
-              <div className="relative" ref={menuRef}>
+              {/* Desktop Menu - DropdownMenu */}
+              {!isMobile && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button className="text-muted-foreground hover:text-foreground p-2 hover:bg-muted rounded-md transition-colors">
+                      <MoreVertical className="h-5 w-5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <DropdownMenuItem onClick={() => setShowSourceDialog(true)}>
+                      <Code className="h-4 w-4 mr-2" />
+                      View Source
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleDownload('md')}>
+                      <Download className="h-4 w-4 mr-2" />
+                      Download as Markdown
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleDownload('txt')}>
+                      <FileText className="h-4 w-4 mr-2" />
+                      Download as Text
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem 
+                      onClick={handleDelete}
+                      className="text-destructive focus:text-destructive focus:bg-destructive/10"
+                    >
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      Delete note
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+
+              {/* Mobile Menu - Sheet (Bottom) */}
+              {isMobile && (
                 <button
-                  onClick={() => setShowMenu(!showMenu)}
+                  onClick={() => setShowMobileMenu(true)}
                   className="text-muted-foreground hover:text-foreground p-2 hover:bg-muted rounded-md transition-colors"
                 >
                   <MoreVertical className="h-5 w-5" />
                 </button>
-
-                {showMenu && (
-                  <div className="absolute right-0 top-full mt-1 w-48 bg-card border border-border rounded-lg shadow-lg py-1 z-20">
-                    <button
-                      onClick={() => {
-                        setShowMenu(false);
-                        setShowSourceDialog(true);
-                      }}
-                      className="w-full flex items-center gap-2 px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors"
-                    >
-                      <Code className="h-4 w-4" />
-                      View Source
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowMenu(false);
-                        handleDelete();
-                      }}
-                      className="w-full flex items-center gap-2 px-4 py-2 text-sm text-destructive hover:bg-muted transition-colors"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Delete note
-                    </button>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
           </div>
         </div>
@@ -191,25 +301,99 @@ Use markdown shortcuts:
         </div>
       </div>
 
-      {/* Markdown Source Dialog */}
+      {/* Mobile Bottom Sheet Menu */}
+      <Sheet open={showMobileMenu} onOpenChange={setShowMobileMenu}>
+        <SheetContent side="bottom" className="rounded-t-2xl px-4 pb-8">
+          <SheetHeader className="pb-4">
+            <SheetTitle className="text-center">Note Options</SheetTitle>
+          </SheetHeader>
+          <div className="space-y-1">
+            <MenuItems onClose={() => setShowMobileMenu(false)} />
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Markdown Source Dialog - Improved */}
       <Dialog open={showSourceDialog} onOpenChange={setShowSourceDialog}>
-        <DialogContent className="max-w-2xl max-h-[80vh]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center justify-between">
-              <span>Markdown Source</span>
-              <button
-                onClick={handleCopyMarkdown}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-muted hover:bg-muted/80 rounded-md transition-colors"
-              >
-                <Copy className="h-4 w-4" />
-                Copy
-              </button>
-            </DialogTitle>
-          </DialogHeader>
-          <div className="mt-4 overflow-auto max-h-[60vh]">
-            <pre className="bg-muted p-4 rounded-md text-sm font-mono whitespace-pre-wrap break-words">
-              {content || '(empty)'}
-            </pre>
+        <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] p-0 gap-0 overflow-hidden bg-card border-border">
+          {/* Header */}
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-card pr-12">
+            <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-accent/50">
+              <Code className="h-4 w-4 text-foreground" />
+            </div>
+            <div>
+              <DialogTitle className="text-base font-semibold text-foreground">Markdown Source</DialogTitle>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {lineCount} lines · {charCount} characters
+              </p>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-card">
+            <button
+              onClick={handleCopyMarkdown}
+              className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-all border ${
+                copied 
+                  ? 'bg-green-600/20 text-green-500 border-green-600/30' 
+                  : 'bg-muted hover:bg-muted/80 text-foreground border-border'
+              }`}
+            >
+              {copied ? (
+                <>
+                  <CheckCheck className="h-4 w-4" />
+                  Copied!
+                </>
+              ) : (
+                <>
+                  <Copy className="h-4 w-4" />
+                  Copy
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => handleDownloadFromSource('md')}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-muted hover:bg-muted/80 text-foreground rounded-lg transition-colors border border-border"
+            >
+              <Download className="h-4 w-4" />
+              <span className="hidden sm:inline">.md</span>
+              <span className="sm:hidden">MD</span>
+            </button>
+            <button
+              onClick={() => handleDownloadFromSource('txt')}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-muted hover:bg-muted/80 text-foreground rounded-lg transition-colors border border-border"
+            >
+              <FileText className="h-4 w-4" />
+              <span className="hidden sm:inline">.txt</span>
+              <span className="sm:hidden">TXT</span>
+            </button>
+          </div>
+
+          {/* Code Content with Line Numbers */}
+          <div className="overflow-auto max-h-[60vh] bg-muted/50">
+            {content ? (
+              <div className="flex text-sm font-mono">
+                {/* Line Numbers */}
+                <div className="flex-shrink-0 py-4 pl-4 pr-3 text-right select-none border-r border-border bg-muted/30 sticky left-0">
+                  {content.split('\n').map((_, i) => (
+                    <div key={i} className="text-muted-foreground leading-6 text-xs">
+                      {i + 1}
+                    </div>
+                  ))}
+                </div>
+                {/* Code Content */}
+                <pre className="flex-1 py-4 px-4 text-foreground whitespace-pre-wrap break-words leading-6 overflow-x-auto">
+                  {content}
+                </pre>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center py-16 text-muted-foreground">
+                <div className="text-center">
+                  <Code className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p>No content yet</p>
+                </div>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>
